@@ -1,0 +1,21 @@
+{
+  "event_id": "f6e8e5b9-a065-4f31-b9e7-15a54b4bc201",
+  "timestamp": "2026-04-26T12:54:15.021610+00:00",
+  "patient_id": "patient_001",
+  "type": "identity",
+  "subtype": "face_recognized",
+  "confidence": 1.0,
+  "metadata": {
+    "person_profile": {
+      "name": "Ismail",
+      "relationship": "son",
+      "background": "He is a software engineer living in Tampa",
+      "last_conversation": "he told you about his new job"
+    }
+  },
+  "source": "vision_engine_v1",
+  "verified": true,
+  "voice_script": "Badri, your son Ismail is here. He is a software engineer living in Tampa. Last time you spoke, he told you about his new job.",
+  "processing_status": "success",
+  "processed_at": "2026-04-26T12:54:15.021619+00:00"
+}

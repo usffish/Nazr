@@ -1,0 +1,12 @@
+{
+  "event_id": "d09fc637-9fa2-4df9-bfe5-5c7382101b15",
+  "timestamp": "2026-04-26T12:55:03.345003+00:00",
+  "patient_id": "patient_001",
+  "type": "health",
+  "subtype": "medicine_taken",
+  "confidence": 0.9,
+  "metadata": {
+    "detected_item": "Medicine"
+  },
+  "source": "vision_engine_v1"
+}

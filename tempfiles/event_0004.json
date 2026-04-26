@@ -1,0 +1,22 @@
+{
+  "event_id": "2252bc22-2b92-4954-9f85-9f52db77aca4",
+  "timestamp": "2026-04-26T13:05:50.274360+00:00",
+  "patient_id": "patient_001",
+  "type": "identity",
+  "subtype": "face_recognized",
+  "confidence": 1.0,
+  "metadata": {
+    "person_profile": {
+      "name": "mohammed",
+      "relationship": "dad",
+      "background": "He is a doctor living in NYC",
+      "last_conversation": "you meet his kids",
+      "shirt_color": "green"
+    }
+  },
+  "source": "vision_engine_v1",
+  "verified": true,
+  "voice_script": "Badri, your dad mohammed is here. He is a doctor living in NYC. Last time you spoke, you meet his kids.",
+  "processing_status": "success",
+  "processed_at": "2026-04-26T13:05:50.274370+00:00"
+}
