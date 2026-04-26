@@ -1,0 +1,21 @@
+{
+  "event_id": "db2822c7-f7dd-4b3e-ba7d-1c9408af726a",
+  "timestamp": "2026-04-26T10:56:50.615710+00:00",
+  "patient_id": "patient_001",
+  "type": "identity",
+  "subtype": "face_recognized",
+  "confidence": 1.0,
+  "metadata": {
+    "person_profile": {
+      "name": "Taikhoom",
+      "relationship": "daughter",
+      "background": "He is a pre med student living in africa",
+      "last_conversation": "he told you about his truck"
+    }
+  },
+  "source": "vision_engine_v1",
+  "verified": true,
+  "voice_script": "Badri, your daughter Taikhoom is here. He is a pre med student living in africa. Last time you spoke, he told you about his truck.",
+  "processing_status": "success",
+  "processed_at": "2026-04-26T10:56:50.615718+00:00"
+}

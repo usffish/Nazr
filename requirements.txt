@@ -1,0 +1,39 @@
+# ─── Vision Engine ───────────────────────────────────────────────────────────
+opencv-python>=4.10
+av
+numpy
+Pillow
+face-recognition
+flask
+requests
+
+# ─── AI Brain (FastAPI) ──────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic>=2.7
+pydantic-settings>=2.2
+google-generativeai
+elevenlabs
+pygame
+httpx
+python-dotenv
+
+# ─── Dashboard (Streamlit) ───────────────────────────────────────────────────
+streamlit
+plotly
+pandas
+
+# ─── Database ────────────────────────────────────────────────────────────────
+pymongo
+motor          # async MongoDB driver for FastAPI
+
+# ─── Shared ──────────────────────────────────────────────────────────────────
+python-jose
+aiofiles
+certifi
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+hypothesis
+pytest
+pytest-asyncio

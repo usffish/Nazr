@@ -1,0 +1,12 @@
+{
+  "event_id": "ce94b92b-f592-4ba0-9f97-c07fb0d993af",
+  "timestamp": "2026-04-26T10:59:28.735441+00:00",
+  "patient_id": "patient_001",
+  "type": "health",
+  "subtype": "drinking",
+  "confidence": 0.9,
+  "metadata": {
+    "detected_item": "Cup"
+  },
+  "source": "vision_engine_v1"
+}

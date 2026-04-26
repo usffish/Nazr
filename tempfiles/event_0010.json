@@ -1,0 +1,12 @@
+{
+  "event_id": "26d97b78-5fcd-46b1-8222-b724174f8e83",
+  "timestamp": "2026-04-26T11:01:40.435793+00:00",
+  "patient_id": "patient_001",
+  "type": "health",
+  "subtype": "drinking",
+  "confidence": 0.9,
+  "metadata": {
+    "detected_item": "Water Bottle"
+  },
+  "source": "vision_engine_v1"
+}

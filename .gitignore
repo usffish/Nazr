@@ -1,0 +1,74 @@
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+.env
+*.env
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# ─── Virtual Environments ────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+.env.local
+
+# ─── Audio Temp Files ────────────────────────────────────────────────────────
+audio/*.mp3
+audio/
+
+# ─── Known Faces (personal data — do not commit) ─────────────────────────────
+services/vision/known_faces/*.jpg
+services/vision/known_faces/*.jpeg
+services/vision/known_faces/*.png
+# Keep .json profile files but not face images
+# To share profiles without images, commit only the .json files
+
+# ─── IDE / Editor ────────────────────────────────────────────────────────────
+.kiro/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+.pytest_cache/
+.hypothesis/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Jupyter ─────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db

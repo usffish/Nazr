@@ -1,0 +1,6 @@
+# mediamtx configuration for AuraGuard
+# Allows SpecBridge to publish on rtmp://<host>:1935/live/stream
+
+paths:
+  live/stream:
+    # empty = use defaults (publish + read allowed, no auth)

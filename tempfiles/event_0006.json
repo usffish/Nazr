@@ -1,0 +1,12 @@
+{
+  "event_id": "0a5a2e67-4cfd-450e-af9b-d73187991990",
+  "timestamp": "2026-04-26T10:57:10.240332+00:00",
+  "patient_id": "patient_001",
+  "type": "health",
+  "subtype": "drinking",
+  "confidence": 0.9,
+  "metadata": {
+    "detected_item": "Mug, Bottle"
+  },
+  "source": "vision_engine_v1"
+}
