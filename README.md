@@ -37,7 +37,8 @@ Meta Smart Glasses (POV stream via SpecBridge iOS app)
 │  Vision Engine              │  Python + OpenCV  :5000
 │  - YuNet face detection     │
 │  - SFace face recognition   │
-│  - Gemini health detection  │
+│  - YOLOv8 primary pass      │
+│  - Gemini secondary pass    │
 └────────────┬────────────────┘
              │ POST /event  (JSON Contract)
              ▼
@@ -74,7 +75,7 @@ Meta Smart Glasses (POV stream via SpecBridge iOS app)
 |-------|-----------|
 | Wearable Hardware | Meta Smart Glasses (POV stream via SpecBridge iOS app) |
 | RTMP Server | mediamtx |
-| Vision Engine | Python, OpenCV, YuNet + SFace (ONNX), ONNXRuntime, Flask |
+| Vision Engine | Python, OpenCV, YuNet + SFace (ONNX), ONNXRuntime, YOLOv8n (Ultralytics) |
 | AI Reasoning | Google Gemini 1.5 Flash (multimodal) |
 | Voice Synthesis | ElevenLabs + edge-tts (fallback) |
 | Audio Playback | Pygame, Web Audio API (PiP) |
@@ -114,7 +115,9 @@ Meta Smart Glasses (POV stream via SpecBridge iOS app)
     │       └── mongodb.py            # Motor async MongoDB client + writes
     │
     ├── vision/
-    │   ├── face_recognition_engine.py  # Vision Engine — YuNet + SFace + Gemini health
+    │   ├── face_recognition_engine.py  # Vision Engine — YuNet + SFace + two-pass health
+    │   ├── local_detector.py           # YOLOv8n Primary Pass detector
+    │   ├── gemini_health.py            # Gemini Secondary Pass client
     │   └── known_faces/              # Per-person .jpg + .json profile files
     │       ├── ismail.json
     │       ├── mohammed.json
@@ -133,8 +136,13 @@ Identifies familiar people using **YuNet** (face detection) and **SFace** (face 
 
 > *"Ismail, your son Hussain is here. He is a software engineer living in Tampa. Last time you spoke, he told you about his new job."*
 
-### 2. Health Item Detection
-Optionally uses **Google Gemini 1.5 Flash** to detect eating, drinking, and medication intake from the glasses POV. The Brain performs a **two-pass verification** (primary detection + secondary yes/no confirmation) to filter false positives before any alert fires.
+### 2. Hybrid Two-Pass Health Detection
+Health monitoring uses a **two-pass pipeline** to minimize false positives and unnecessary cloud API calls:
+
+- **Primary Pass (local):** A **YOLOv8n** model runs on each sampled frame in under 200 ms on CPU. Only frames containing health-relevant objects (cups, food, pills, etc.) are escalated.
+- **Secondary Pass (cloud):** Flagged frames are sent to **Gemini 1.5 Flash** with a targeted, subtype-specific prompt that returns a numeric confidence score.
+- Per-subtype thresholds gate event dispatch — `medicine_taken` uses a lower threshold (0.45) than `eating`/`drinking` (0.6) to bias toward patient safety.
+- Medicine-related objects bypass the frame quality gate entirely, ensuring no medication event is silently dropped.
 
 ### 3. Empathetic Voice Alerts
 Voice scripts are synthesized via **ElevenLabs** and played through the glasses speaker. Falls back to **edge-tts** if ElevenLabs is unavailable. Audio is routed through the Event Audio Webapp using the **Web Audio API + Picture-in-Picture** so it keeps playing when SpecBridge is in the foreground on iOS.
@@ -194,6 +202,10 @@ Open `.env` and fill in every value:
 | `PATIENT_NAME` | Patient's first name (e.g. `Ismail`) |
 | `PATIENT_ID` | Patient identifier (e.g. `patient_001`) |
 | `GLASSES_AUDIO_DEVICE` | System audio device name for the glasses speaker |
+| `ENABLE_HEALTH_DETECTION` | Set `true` to enable the two-pass health pipeline |
+| `LOCAL_DETECTOR_MODEL` | Path to YOLOv8 weights (default: `yolov8n.pt`) |
+| `HEALTH_DETECTION_THRESHOLD` | Override all subtype thresholds (default: per-subtype) |
+| `LOCAL_DETECTOR_CONFIDENCE` | YOLO object confidence floor (default: `0.4`) |
 
 ### 3. Add Known Faces
 
@@ -315,20 +327,29 @@ After processing, the Brain writes an `EventRecord` to MongoDB that adds:
 5. A **10-second cooldown** prevents the same person from being re-announced repeatedly
 6. Recognition runs every **2 seconds** in a background thread to avoid blocking the display loop
 
-### Health Detection (Optional)
+### Hybrid Health Detection Pipeline
 
-Set `ENABLE_HEALTH_DETECTION=true` in `.env` to enable Gemini-based health scanning:
+Set `ENABLE_HEALTH_DETECTION=true` in `.env` to enable the two-pass health pipeline:
 
-- Runs every **5 seconds** in a background thread
-- Detects: water bottle, cup, glass, mug, food, fork, spoon, sandwich, pill, tablet, medication
+**Primary Pass (local — no API call):**
+- **YOLOv8n** runs on each sampled frame every 5 seconds
+- Flags frames containing: cup, glass, mug, bottle, food, fork, spoon, sandwich, pill, tablet, medication
+- Non-flagged frames are discarded immediately — no cloud call made
+- Medicine objects are flagged at any YOLO confidence (safety override)
+
+**Secondary Pass (Gemini 1.5 Flash):**
+- Flagged frames are sent with a subtype-specific prompt requesting a numeric confidence score
+- Per-subtype thresholds: `medicine_taken` → 0.45, `eating`/`drinking` → 0.6
 - A **120-second cooldown** per subtype prevents alert fatigue
-- Detected events are POSTed to the Brain for secondary verification before any alert fires
+- Confirmed events are POSTed to the Brain for voice alert generation
 
 ### Frame Quality Checks
 
 Frames are skipped if:
 - Mean brightness < 30 (too dark)
 - Laplacian variance < 2 (too blurry)
+
+> Exception: medicine-flagged frames bypass the quality gate to ensure no medication event is silently dropped.
 
 ### Supported Video Sources
 
@@ -387,6 +408,8 @@ Falls back to the browser's built-in `SpeechSynthesis` API if ElevenLabs is unav
 |---------|----------|
 | MongoDB unreachable at startup | Logs warning, continues in degraded state |
 | Pygame init fails | Logs warning, continues without audio |
+| YOLOv8 model fails to load | Logs CRITICAL, disables health detection, face recognition continues |
+| Local detector raises exception | Logs WARNING, falls back to Gemini-only path |
 | Gemini verification fails | `verified=false`, pipeline continues |
 | ElevenLabs synthesis fails | `partial_failure`, no audio played |
 | Brain unreachable (from Vision Engine) | Vision Engine logs error, continues capture loop |
@@ -411,4 +434,4 @@ Reduced safety incidents, earlier health intervention, and restored dignity for 
 
 ---
 
-*Last updated: 2026-04-29*
+*Last updated: 2026-05-11*
