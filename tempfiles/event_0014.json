@@ -1,0 +1,21 @@
+{
+  "event_id": "6847d241-4f43-494f-bcba-13e5fad62186",
+  "timestamp": "2026-04-30T05:48:47.922168+00:00",
+  "patient_id": "patient_001",
+  "type": "identity",
+  "subtype": "face_recognized",
+  "confidence": 1.0,
+  "metadata": {
+    "person_profile": {
+      "name": "Ismail",
+      "relationship": "Son",
+      "background": "Engineer living in Tampa",
+      "last_conversation": "Eating ass"
+    }
+  },
+  "source": "vision_engine_yunet_sface",
+  "verified": true,
+  "voice_script": "Ismail, your Son Ismail is here. Engineer living in Tampa. Last time you spoke, Eating ass.",
+  "processing_status": "success",
+  "processed_at": "2026-04-30T05:48:47.922180+00:00"
+}

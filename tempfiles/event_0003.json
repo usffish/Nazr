@@ -1,0 +1,17 @@
+{
+  "event_id": "ffad6d24-97b2-4f7b-bfc0-f65190d35cff",
+  "timestamp": "2026-04-30T05:56:14.959116+00:00",
+  "patient_id": "patient_001",
+  "type": "identity",
+  "subtype": "face_recognized",
+  "confidence": 1.0,
+  "metadata": {
+    "person_profile": {
+      "name": "Ismail",
+      "relationship": "Son",
+      "background": "Engineer living in Tampa",
+      "last_conversation": "Eating ass"
+    }
+  },
+  "source": "vision_engine_v1"
+}

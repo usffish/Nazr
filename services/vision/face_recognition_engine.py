@@ -34,6 +34,15 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
+# Import canonical HEALTH_SUBTYPE_MAP (lowercase keys) from local_detector for
+# use in the new hybrid-detection helpers.  The legacy uppercase HEALTH_SUBTYPE_MAP
+# defined below is kept for backward compatibility with detect_health_activity().
+from services.vision.local_detector import (  # noqa: E402
+    HEALTH_SUBTYPE_MAP as _LOCAL_HEALTH_SUBTYPE_MAP,
+    DetectionResult,
+    get_detector,
+)
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 _ROOT = Path(__file__).parent
@@ -65,6 +74,89 @@ HEALTH_SUBTYPE_MAP = {
 }
 
 _last_health_event: dict[str, float] = {}
+
+# ── Hybrid health detection — module-level configuration ─────────────────────
+# Read env vars once at import time so they are available before the main loop.
+
+# Path to the YOLO model weights used by the Local Detector (Primary Pass).
+# Default: tests/vision/models/yolov8n.pt (relative to repo root).
+_LOCAL_DETECTOR_MODEL_PATH: str = os.getenv(
+    "LOCAL_DETECTOR_MODEL",
+    str(Path(__file__).parent.parent.parent / "tests" / "vision" / "models" / "yolov8n.pt"),
+)
+
+# Per-subtype confidence threshold override.  When set, applies uniformly to
+# all subtypes.  When unset, per-subtype defaults in _DEFAULT_THRESHOLDS apply.
+# Default: (unset — use per-subtype defaults)
+_HEALTH_DETECTION_THRESHOLD_ENV: str | None = os.getenv("HEALTH_DETECTION_THRESHOLD")
+
+# Minimum YOLO object-detection confidence for the Local Detector.
+# Default: 0.4  (Requirement 4.4)
+_LOCAL_DETECTOR_CONFIDENCE_ENV: str = os.getenv("LOCAL_DETECTOR_CONFIDENCE", "0.4")
+
+# Module-level flag: set to True at startup if the YOLO model file is missing,
+# disabling health detection for the session (Requirement 4.5).
+_health_detection_disabled: bool = False
+
+if not os.path.exists(_LOCAL_DETECTOR_MODEL_PATH):
+    log.critical(
+        "CRITICAL: LOCAL_DETECTOR_MODEL path does not exist: %r — "
+        "health detection is DISABLED for this session.",
+        _LOCAL_DETECTOR_MODEL_PATH,
+    )
+    _health_detection_disabled = True
+
+# ── Per-subtype threshold defaults (Requirement 6.1) ─────────────────────────
+
+_DEFAULT_THRESHOLDS: dict[str, float] = {
+    "medicine_taken": 0.45,
+    "eating": 0.6,
+    "drinking": 0.6,
+}
+
+
+def _get_threshold(subtype: str) -> float:
+    """Return the effective detection threshold for *subtype*.
+
+    If ``HEALTH_DETECTION_THRESHOLD`` env var is set and parseable as a float,
+    that value is returned uniformly for all subtypes.  Otherwise the
+    per-subtype default from ``_DEFAULT_THRESHOLDS`` is used (falling back to
+    0.6 for unknown subtypes).
+
+    Logs a WARNING when the env var is present but cannot be parsed.
+
+    Requirements: 4.3, 6.1
+    """
+    env_val = os.getenv("HEALTH_DETECTION_THRESHOLD")
+    if env_val:
+        try:
+            return float(env_val)
+        except ValueError:
+            log.warning(
+                "Unparseable HEALTH_DETECTION_THRESHOLD=%r, using defaults", env_val
+            )
+    return _DEFAULT_THRESHOLDS.get(subtype, 0.6)
+
+
+def _resolve_subtype(detected_objects: list[str]) -> str | None:
+    """Map the first matching object label to a health subtype.
+
+    Iterates *detected_objects* in order and returns the subtype for the first
+    label that appears in ``HEALTH_SUBTYPE_MAP`` (case-insensitive).  Returns
+    ``None`` if no label matches.
+
+    Uses the canonical lowercase ``HEALTH_SUBTYPE_MAP`` imported from
+    ``local_detector`` so that labels produced by the Local Detector (which are
+    already lowercase) are matched correctly.
+
+    Requirements: 2.2
+    """
+    for label in detected_objects:
+        subtype = _LOCAL_HEALTH_SUBTYPE_MAP.get(label.lower())
+        if subtype:
+            return subtype
+    return None
+
 
 # ── Thread state ──────────────────────────────────────────────────────────────
 
@@ -105,6 +197,18 @@ def _load_face_models():
 
 _detector, _sface_session, _sface_input_name, _sface_output_name = _load_face_models()
 _detector_lock = threading.Lock()
+
+# ── Warm up the Local Detector (Primary Pass) at module init ─────────────────
+# Call get_detector() once here so the YOLO model is loaded before the main
+# loop starts.  On failure, get_detector() logs CRITICAL and sets
+# _health_detection_disabled = True inside local_detector — we mirror that
+# flag here so detect_health_activity() can check it.
+try:
+    get_detector()
+except Exception:
+    # Failure already logged + _health_detection_disabled set inside local_detector.
+    # Mirror the disabled state in this module's flag.
+    _health_detection_disabled = True
 
 
 def _get_face_feature_onnx(img_bgr: np.ndarray) -> np.ndarray | None:
@@ -372,7 +476,7 @@ def save_event_json(event: dict) -> None:
 # ── Event logger ──────────────────────────────────────────────────────────────
 
 def log_event(profile: dict, frame_bgr: np.ndarray | None = None) -> str:
-    """Append an identity event to the local JSONL store."""
+    """Append an identity event to the local JSONL store and POST to Brain."""
     voice_script = build_voice_script(profile)
 
     image_b64 = ""
@@ -389,16 +493,28 @@ def log_event(profile: dict, frame_bgr: np.ndarray | None = None) -> str:
         "confidence": 1.0,
         "image_b64": image_b64,
         "metadata": {"person_profile": profile},
-        "source": "vision_engine_yunet_sface",
-        "verified": True,
-        "voice_script": voice_script,
-        "processing_status": "success",
-        "processed_at": datetime.now(timezone.utc).isoformat(),
+        "source": "vision_engine_v1",
     }
     _append_event(event)
     save_event_json(event)
     log.info("Event logged for: %s", profile.get("name"))
-    return voice_script
+
+    # POST to Brain for Gemini verification, TTS, and MongoDB write
+    brain_posted = False
+    try:
+        brain_url = f"http://{os.getenv('BRAIN_HOST', 'localhost')}:{os.getenv('BRAIN_PORT', '8000')}/event"
+        resp = http_requests.post(brain_url, json=event, timeout=30)
+        if resp.status_code < 300:
+            log.info("Identity event sent to Brain: %s -> HTTP %d", profile.get("name"), resp.status_code)
+            brain_posted = True
+        else:
+            log.error("Brain returned non-2xx for identity event: HTTP %d", resp.status_code)
+    except Exception as e:
+        log.warning("Failed to POST identity event to Brain (will speak locally): %s", e)
+
+    # Return empty string if Brain handled it (Brain does TTS),
+    # return voice_script if Brain unreachable (caller will speak locally)
+    return "" if brain_posted else voice_script
 
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
@@ -448,70 +564,229 @@ def speak(voice_script: str):
         _speak_lock.release()
 
 
-# ── Health activity detector (Gemini - optional) ──────────────────────────────
+# ── Hybrid health detection helpers ──────────────────────────────────────────
 
-def detect_health_activity(frame_bgr: np.ndarray) -> None:
-    """Ask Gemini if the wearer is eating, drinking, or taking medicine."""
-    try:
-        import google.generativeai as genai
+def _run_secondary_pass(frame_bgr: np.ndarray, subtype: str):
+    """
+    Run the Secondary Pass (Gemini 1.5 Flash) on *frame_bgr* for *subtype*.
 
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        _model = genai.GenerativeModel("gemini-1.5-flash")
-    except Exception as e:
-        log.warning("Gemini unavailable for health detection: %s", e)
-        return
+    JPEG-encodes the frame (max 640 px on the longest side), calls
+    ``call_gemini_health``, logs INFO with prompt/response/score, logs DEBUG
+    with wall-clock latency, and returns a :class:`ConfidenceResult` or
+    ``None`` on timeout/failure.
 
+    Requirements: 2.1, 2.2, 2.3, 2.4, 2.7, 5.2, 5.6
+    """
+    from services.vision.gemini_health import call_gemini_health, build_health_prompt, ConfidenceResult  # noqa: F401
+
+    # Resize to max 640 px on the longest side
     h, w = frame_bgr.shape[:2]
-    if w > 640:
-        frame_bgr = cv2.resize(frame_bgr, (640, int(h * 640 / w)))
+    if max(h, w) > 640:
+        scale = 640 / max(h, w)
+        frame_bgr = cv2.resize(frame_bgr, (int(w * scale), int(h * scale)))
+
     _, buf = cv2.imencode(".jpg", frame_bgr)
     frame_b64 = base64.b64encode(buf).decode("utf-8")
 
-    parts = [
-        {"inline_data": {"mime_type": "image/jpeg", "data": frame_b64}},
-        (
-            "This image is from a first-person point-of-view camera worn on glasses. "
-            "Look carefully at what objects are visible and being held or used. "
-            "If you see any of the following, name it: "
-            "water bottle, soda can, cup, glass, mug, bottle, food, fork, spoon, sandwich, pill, pills, tablet, medicine, medication. "
-            "Reply with ONLY the object name from that list (e.g. 'water bottle', 'cup', 'pills'). "
-            "If none of those objects are visible, reply with exactly: NONE."
-        ),
-    ]
+    prompt = build_health_prompt(subtype)
+    log.info(
+        "Secondary pass invoked — subtype=%r, prompt=%r",
+        subtype,
+        prompt,
+    )
+
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    t_start = time.monotonic()
+    result = call_gemini_health(frame_b64=frame_b64, subtype=subtype, api_key=api_key)
+    latency_ms = (time.monotonic() - t_start) * 1000.0
+
+    log.debug(
+        "Secondary pass latency — subtype=%r, latency=%.1f ms",
+        subtype,
+        latency_ms,
+    )
+
+    if result is not None:
+        log.info(
+            "Secondary pass result — subtype=%r, raw_text=%r, score=%.4f",
+            subtype,
+            result.raw_text,
+            result.score,
+        )
+
+    return result
+
+
+def _dispatch_health_event(
+    frame_bgr: np.ndarray,
+    subtype: str,
+    confidence_result,
+    detection_result,
+) -> None:
+    """
+    Construct a Health_Event and POST it to the Brain.
+
+    Builds a :class:`shared.contract.Event` with all required fields, POSTs
+    it to the Brain endpoint within 5 seconds, logs INFO on success, logs
+    ERROR on non-2xx or connection error (no retry), and calls
+    ``save_event_json`` after a successful POST.
+
+    Requirements: 3.1, 3.2, 3.3, 5.5, 7.1, 7.2
+    """
+    from shared.contract import Event
+
+    # Resize to max 640 px on the longest side for the event image
+    h, w = frame_bgr.shape[:2]
+    if max(h, w) > 640:
+        scale = 640 / max(h, w)
+        frame_bgr = cv2.resize(frame_bgr, (int(w * scale), int(h * scale)))
+
+    _, buf = cv2.imencode(".jpg", frame_bgr)
+    image_b64 = base64.b64encode(buf).decode("utf-8")
+
+    detected_item = (
+        detection_result.detected_objects[0]
+        if detection_result.detected_objects
+        else subtype
+    )
+
+    event = Event(
+        event_id=str(uuid.uuid4()),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        patient_id=os.getenv("PATIENT_ID", "unknown"),
+        type="health",
+        subtype=subtype,
+        confidence=confidence_result.score,
+        image_b64=image_b64,
+        metadata={"detected_item": detected_item},
+        source="vision_engine_v1",
+    )
+
+    brain_url = (
+        f"http://{os.getenv('BRAIN_HOST', 'localhost')}:"
+        f"{os.getenv('BRAIN_PORT', '8000')}/event"
+    )
 
     try:
-        response = _model.generate_content(parts)
-        answer = response.text.strip().upper()
-        log.info("Health check response: %r", answer)
-        subtype = next(
-            (st for kw, st in HEALTH_SUBTYPE_MAP.items() if kw in answer), None
+        resp = http_requests.post(brain_url, json=event.model_dump(), timeout=5)
+        if resp.status_code // 100 == 2:
+            log.info(
+                "Health event dispatched — subtype=%r, score=%.4f, http_status=%d",
+                subtype,
+                confidence_result.score,
+                resp.status_code,
+            )
+            save_event_json(event.model_dump())
+        else:
+            log.error(
+                "Brain POST returned non-2xx — subtype=%r, score=%.4f, http_status=%d",
+                subtype,
+                confidence_result.score,
+                resp.status_code,
+            )
+    except Exception as exc:
+        log.error(
+            "Brain POST connection error — subtype=%r, score=%.4f, error=%s",
+            subtype,
+            confidence_result.score,
+            exc,
         )
-        if subtype is None:
-            return
 
-        now_ts = datetime.now(timezone.utc).timestamp()
-        if now_ts - _last_health_event.get(subtype, 0) < HEALTH_COOLDOWN_SECONDS:
-            log.debug("Health event %s suppressed (cooldown)", subtype)
-            return
-        _last_health_event[subtype] = now_ts
 
-        event = {
-            "event_id": str(uuid.uuid4()),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "patient_id": os.getenv("PATIENT_ID", "unknown"),
-            "type": "health",
-            "subtype": subtype,
-            "confidence": 0.9,
-            "image_b64": frame_b64,
-            "metadata": {"detected_item": answer.title()},
-            "source": "vision_engine_yunet_sface",
-        }
-        brain_url = f"http://{os.getenv('BRAIN_HOST', 'localhost')}:{os.getenv('BRAIN_PORT', '8000')}/event"
-        resp = http_requests.post(brain_url, json=event, timeout=5)
-        save_event_json(event)
-        log.info("Health event sent: %s -> Brain %d", subtype, resp.status_code)
-    except Exception as e:
-        log.warning("Health detection failed: %s", e)
+# ── Health activity detector (Gemini - optional) ──────────────────────────────
+
+def detect_health_activity(frame_bgr: np.ndarray) -> None:
+    """Run the two-pass hybrid health detection pipeline on *frame_bgr*.
+
+    Pass 1 — Local YOLO detector (Primary Pass): fast, no network I/O.
+    Pass 2 — Gemini 1.5 Flash (Secondary Pass): targeted, confidence-scored.
+
+    The function signature is unchanged from the previous implementation so
+    that the caller (``_health_worker``) requires no modification.
+
+    Requirements: 1.1, 1.3, 1.4, 1.7, 3.4, 3.5, 5.1, 5.3, 5.4, 5.5, 6.3,
+                  7.4, 7.5
+    """
+    # Guard: health detection disabled at startup (model missing / load error)
+    if _health_detection_disabled:
+        return
+
+    # ── 1. Frame quality check ────────────────────────────────────────────────
+    quality_ok = is_frame_usable(frame_bgr)
+
+    # ── 2. Primary Pass ───────────────────────────────────────────────────────
+    try:
+        result = get_detector().run(frame_bgr)
+        log.debug(
+            "Primary pass: flagged=%s, objects=%s, scores=%s",
+            result.flagged,
+            result.detected_objects,
+            result.confidence_scores,
+        )
+    except Exception as exc:
+        log.warning(
+            "Local detector failed: %s — falling back to Gemini (synthetic flagged result)",
+            exc,
+        )
+        result = DetectionResult(
+            flagged=True,
+            detected_objects=[],
+            confidence_scores={},
+            medicine_flagged=False,
+        )
+
+    # ── 3. Medicine safety override / quality gate ────────────────────────────
+    # If the frame is unusable AND no medicine object was flagged, skip.
+    # (If medicine WAS flagged, we bypass the quality gate — Requirement 6.3.)
+    if not quality_ok and not result.medicine_flagged:
+        log.debug("Frame quality check failed and no medicine flag — skipping health detection")
+        return
+
+    # ── 4. Primary Pass flag check ────────────────────────────────────────────
+    if not result.flagged:
+        log.debug(
+            "Primary pass: not flagged — skipping Secondary Pass. Objects: %s",
+            result.detected_objects,
+        )
+        return
+
+    # ── 5. Resolve subtype from detected objects ──────────────────────────────
+    subtype = _resolve_subtype(result.detected_objects)
+    if subtype is None:
+        return
+
+    # ── 6. Secondary Pass ─────────────────────────────────────────────────────
+    confidence_result = _run_secondary_pass(frame_bgr, subtype)
+    if confidence_result is None:
+        return
+
+    # ── 7. Threshold gate ─────────────────────────────────────────────────────
+    threshold = _get_threshold(subtype)
+    if confidence_result.score < threshold:
+        log.info(
+            "Health event suppressed (below threshold) — subtype=%r, score=%.4f, threshold=%.4f",
+            subtype,
+            confidence_result.score,
+            threshold,
+        )
+        return
+
+    # ── 8. Cooldown gate ──────────────────────────────────────────────────────
+    now_ts = datetime.now(timezone.utc).timestamp()
+    last_ts = _last_health_event.get(subtype, 0.0)
+    elapsed = now_ts - last_ts
+    if elapsed < HEALTH_COOLDOWN_SECONDS:
+        remaining = HEALTH_COOLDOWN_SECONDS - elapsed
+        log.debug(
+            "Health event suppressed (cooldown) — subtype=%r, remaining=%.0fs",
+            subtype,
+            remaining,
+        )
+        return
+    _last_health_event[subtype] = now_ts
+
+    # ── 9. Dispatch ───────────────────────────────────────────────────────────
+    _dispatch_health_event(frame_bgr, subtype, confidence_result, result)
 
 
 # ── Frame generator ───────────────────────────────────────────────────────────
@@ -572,14 +847,18 @@ def _yield_frames(video_source):
             return
         while True:
             with _video_capture_lock:
-                ret, frame = _video_capture.read()
-            if ret:
+                if _video_capture is None:
+                    ret, frame = False, None
+                else:
+                    ret, frame = _video_capture.read()
+            if ret and frame is not None:
                 yield frame
             else:
                 log.warning("Frame read failed - reconnecting in 3 s...")
                 with _video_capture_lock:
-                    _video_capture.release()
-                    _video_capture = None
+                    if _video_capture is not None:
+                        _video_capture.release()
+                        _video_capture = None
                 time.sleep(3)
                 with _video_capture_lock:
                     _video_capture = cv2.VideoCapture(video_source)
@@ -674,10 +953,13 @@ def run(video_source=None):
                 if name != last_matched_name:
                     last_matched_name = name
                     frame_snapshot = frame.copy()
-                    threading.Thread(
-                        target=lambda p=profile, f=frame_snapshot: speak(log_event(p, f)),
-                        daemon=True,
-                    ).start()
+                    def _handle_match(p=profile, f=frame_snapshot):
+                        voice_script = log_event(p, f)
+                        # speak() locally only if Brain is unreachable
+                        # (log_event returns "" when Brain handled it)
+                        if voice_script:
+                            speak(voice_script)
+                    threading.Thread(target=_handle_match, daemon=True).start()
                     last_label = (f"Matched: {name}", (0, 255, 0))
                 else:
                     last_label = (f"Matched: {name}", (0, 200, 100))
@@ -739,4 +1021,20 @@ def run(video_source=None):
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+    parser = argparse.ArgumentParser(description="AuraGuard Vision Engine")
+    parser.add_argument(
+        "--webcam", action="store_true",
+        help="Use laptop webcam (camera index 0) instead of RTMP stream"
+    )
+    parser.add_argument(
+        "--camera", type=int, default=0,
+        help="Webcam camera index to use (default: 0)"
+    )
+    args = parser.parse_args()
+
+    if args.webcam:
+        log.info("Webcam mode: using camera index %d", args.camera)
+        run(video_source=args.camera)
+    else:
+        run()

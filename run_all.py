@@ -23,6 +23,7 @@ import socket
 import subprocess
 import sys
 import time
+import argparse
 
 SERVICES = [
     {
@@ -134,17 +135,54 @@ def _check_mediamtx():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="AuraGuard — Start all services")
+    parser.add_argument(
+        "--webcam", action="store_true",
+        help="Use laptop webcam instead of RTMP stream (skips mediamtx)"
+    )
+    parser.add_argument(
+        "--camera", type=int, default=0,
+        help="Webcam camera index (default: 0)"
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("  AuraGuard AI — Starting all services")
+    if args.webcam:
+        print("  Mode: WEBCAM (camera index %d)" % args.camera)
+    else:
+        print("  Mode: RTMP stream (Meta Smart Glasses)")
     print("=" * 60)
 
-    _check_mediamtx()
-    _kill_existing_mediamtx()
-    _kill_port(8502, "Event Audio")
+    # Build the service list dynamically based on mode
+    services = []
+
+    if not args.webcam:
+        _check_mediamtx()
+        _kill_existing_mediamtx()
+        services.append(SERVICES[0])  # mediamtx
+
     _kill_port(8000, "AI Brain")
     _kill_port(8501, "Dashboard")
+    _kill_port(8502, "Event Audio")
 
-    for svc in SERVICES:
+    services.append(SERVICES[1])  # AI Brain
+
+    # Vision Engine — swap command for webcam mode
+    vision_svc = dict(SERVICES[2])
+    if args.webcam:
+        vision_svc = dict(vision_svc)
+        vision_svc["cmd"] = [
+            sys.executable, "-m", "services.vision.face_recognition_engine",
+            "--webcam", "--camera", str(args.camera),
+        ]
+        vision_svc["note"] = f"Vision Engine using webcam (camera {args.camera})"
+    services.append(vision_svc)
+
+    services.append(SERVICES[3])  # Dashboard
+    services.append(SERVICES[4])  # Event Audio
+
+    for svc in services:
         name = svc["name"]
         cmd = svc["cmd"]
         print(f"\n[{name}] Starting...")
@@ -162,30 +200,28 @@ def main():
             print(f"[{name}] CRASHED immediately (exit code {proc.returncode})")
             _shutdown()
 
-        # For mediamtx, confirm it's actually listening on :1935
         if name == "mediamtx":
             if _port_open("localhost", 1935):
                 print(f"[{name}] Port 1935 confirmed open ✓")
             else:
-                print(f"[{name}] WARNING: port 1935 is NOT open after startup — mediamtx may have crashed")
-                print(f"[{name}] Check the output above for error messages")
+                print(f"[{name}] WARNING: port 1935 is NOT open after startup")
 
         print(f"[{name}] {svc['note']}")
 
     print("\n" + "=" * 60)
     print("  All services running. Press Ctrl+C to stop.")
-    print("  Dashboard:  http://localhost:8501")
-    print("  Brain API:  http://localhost:8000")
+    print("  Dashboard:   http://localhost:8501")
+    print("  Brain API:   http://localhost:8000")
     print("  Event Audio: http://localhost:8502")
-    print("  RTMP:       rtmp://localhost:1935/live/stream")
+    if not args.webcam:
+        print("  RTMP:        rtmp://localhost:1935/live/stream")
     print("=" * 60 + "\n")
 
-    # Watch for unexpected exits
     while True:
         for i, proc in enumerate(_procs):
             if proc.poll() is not None:
-                name = SERVICES[i]["name"]
-                print(f"[AuraGuard] WARNING: {name} exited unexpectedly (code {proc.returncode})")
+                name = _procs[i]
+                print(f"[AuraGuard] WARNING: service exited unexpectedly (code {proc.returncode})")
         time.sleep(5)
 
 
