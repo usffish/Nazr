@@ -33,6 +33,9 @@ ENV/
 audio/*.mp3
 audio/
 
+# ─── Runtime Temp Files (generated at runtime, never commit) ─────────────────
+tempfiles/
+
 # ─── Known Faces (personal data — do not commit) ─────────────────────────────
 services/vision/known_faces/*.jpg
 services/vision/known_faces/*.jpeg
@@ -47,6 +50,9 @@ services/vision/known_faces/*.png
 *.swo
 .DS_Store
 Thumbs.db
+
+# ─── Kiro workspace config (local only) ──────────────────────────────────────
+.kiro/
 
 # ─── Testing ─────────────────────────────────────────────────────────────────
 .pytest_cache/
